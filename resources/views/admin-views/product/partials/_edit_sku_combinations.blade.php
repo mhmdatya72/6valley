@@ -55,7 +55,7 @@
                     <input type="text" name="sku_{{ $combination['type'] }}" value="{{ $combination['sku'] }}" class="form-control  store-keeping-unit">
                 </td>
                 <td>
-                    <input type="number" name="qty_{{ $combination['type'] }}"
+                    <input type="number"  name="qty_{{ $combination['type'] }}"
                            value="{{ $combination['qty'] }}" min="1" max="100000" step="1"
                            class="form-control" placeholder="{{ translate('ex') }}: {{ translate('5') }}"
                            required>

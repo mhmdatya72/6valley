@@ -16,7 +16,10 @@ use App\Contracts\Repositories\TranslationRepositoryInterface;
 use App\Contracts\Repositories\VendorRepositoryInterface;
 use App\Contracts\Repositories\WishlistRepositoryInterface;
 use App\Enums\ViewPaths\Admin\Product;
+use App\Utils\BackEndHelper;
 use App\Enums\WebConfigKey;
+use App\Utils\ImageManager;
+use App\Models\Translation;
 use App\CPU\Helpers;
 use App\Models\Product as prod;
 use App\Events\ProductRequestStatusUpdateEvent;
@@ -89,8 +92,9 @@ class ProductController extends BaseController
         return view(Product::ADD[VIEW], compact('categories', 'brands', 'brandSetting', 'digitalProductSetting', 'colors', 'attributes', 'languages', 'defaultLanguage'));
     }
 
-    public function add(Request $request, ProductService $service): JsonResponse|RedirectResponse
+    public function add(Request $request): JsonResponse|RedirectResponse
     {
+
 //        ProductAddRequest $request
 
 //        if ($request->ajax()) {
@@ -102,42 +106,86 @@ class ProductController extends BaseController
 //        $this->productRepo->addRelatedTags(request: $request, product: $savedProduct);
 //        $this->translationRepo->add(request: $request, model: 'App\Models\Product', id: $savedProduct->id);
 
-
         $validator = Validator::make($request->all(), [
             'category_id' => 'required',
             'brand_id' => 'required',
             'images' => 'required',
             'image' => 'required',
-            'tax' => 'required|min:0',
-            'unit' => 'required',
-            'unit_price' => 'required|numeric|min:1',
-            'purchase_price' => 'required|numeric|min:1',
-            'discount' => 'required|gt:-1',
-            'shipping_cost' => 'required|gt:-1',
         ], [
             'images.required' => 'Product images is required!',
             'image.required' => 'Product thumbnail is required!',
             'category_id.required' => 'category  is required!',
             'brand_id.required' => 'brand  is required!',
-            'unit.required' => 'Unit  is required!',
         ]);
 
-        if ($request['discount_type'] == 'percent') {
-            $dis = ($request['unit_price'] / 100) * $request['discount'];
-        } else {
-            $dis = $request['discount'];
+
+        $variations = [];
+        $_variations = [];
+        $productOptionsNames = [] ;
+        foreach($request['prdoctPrice'] as $option){
+            if($option['unit'] && $option['unit_price'] && $option['purchase_price']  && $option['numberOfPieces'] ){
+
+                if ($option['discount_type'] == 'percent') {
+                    $option['dis'] = ($option['unit_price'] / 100) * $option['discount'];
+                } else {
+                    $option['dis'] = $option['discount'];
+                }
+
+                if ($option['unit_price'] <= $option['dis']) {
+                    $validator->after(function ($validator) {
+                        $validator->errors()->add(
+                            'unit_price', 'Discount can not be more or equal to the price!'
+                        );
+                    });
+                }
+
+                $_option = [
+                    'order' => $option['order'],
+                    'type' => $option['unit'],
+                    'price' => $option['unit_price'],
+                    'qty' => 0,
+                    'sku' => null,
+                    'purchase_price' => $option['purchase_price'],
+                    'tax' => $option['tax'],
+                    'discount' => $option['discount'],
+                    'discount_type' => $option['discount_type'],
+                    'tax_type' => $option['tax_type'],
+                    'shipping_cost' => $option['shipping_cost'],
+                    'multiply_qty' => isset($option['multiplyQTY']) ? $option['multiplyQTY'] : 0,
+                    'numberOfPieces' =>  $option['numberOfPieces'],
+                    'description' =>  $option['description'],
+                ];
+                $_variations[$option['order']] = $_option;
+                // $productOptionsNames[] = $_option['type'];
+            }
         }
 
-        if ($request['unit_price'] <= $dis) {
+        if(count($_variations) == 0){
             $validator->after(function ($validator) {
-                $validator->errors()->add(
-                    'unit_price', 'Discount can not be more or equal to the price!'
-                );
+                $validator->errors()->add('options', 'Product can not have one unit');
             });
         }
 
 
-        $p = new prod();
+        sort($_variations);
+        foreach($_variations as $_variation){
+            $variations[] = $_variation;
+            $productOptionsNames[] = $_variation['type'];
+        }
+
+        unset($_variations);
+
+        $choice_options = [];
+        array_push($choice_options, [
+            "name" => "choice_4",
+            "title" => "الكمية",
+            "options" => $productOptionsNames
+        ]);
+
+
+
+
+        $p = new Prod();
         $p->user_id = auth('admin')->id();
         $p->added_by = "admin";
         $p->name = $request->name[array_search('en', $request->lang)];
@@ -175,62 +223,11 @@ class ProductController extends BaseController
             $colors = [];
             $p->colors = json_encode($colors);
         }
-        $choice_options = [];
-        if ($request->has('choice')) {
-            foreach ($request->choice_no as $key => $no) {
-                $str = 'choice_options_' . $no;
-                $item['name'] = 'choice_' . $no;
-                $item['title'] = $request->choice[$key];
-                $item['options'] = explode(',', implode('|', $request[$str]));
-                array_push($choice_options, $item);
-            }
-        }
+
         $p->choice_options = json_encode($choice_options);
-        //combinations start
-        $options = [];
-        if ($request->has('colors_active') && $request->has('colors') && count($request->colors) > 0) {
-            $colors_active = 1;
-            array_push($options, $request->colors);
-        }
-        if ($request->has('choice_no')) {
-            foreach ($request->choice_no as $key => $no) {
-                $name = 'choice_options_' . $no;
-                $my_str = implode('|', $request[$name]);
-                array_push($options, explode(',', $my_str));
-            }
-        }
-        //Generates the combinations of customer choice options
 
-        $combinations = Helpers::combinations($options);
 
-        $variations = [];
-        $stock_count = 0;
-        if (count($combinations[0]) > 0) {
-            foreach ($combinations as $key => $combination) {
-                $str = '';
-                foreach ($combination as $k => $item) {
-                    if ($k > 0) {
-                        $str .= '-' . str_replace(' ', '', $item);
-                    } else {
-                        if ($request->has('colors_active') && $request->has('colors') && count($request->colors) > 0) {
-                            $color_name = Color::where('code', $item)->first()->name;
-                            $str .= $color_name;
-                        } else {
-                            $str .= str_replace(' ', '', $item);
-                        }
-                    }
-                }
-                $item = [];
-                $item['type'] = $str;
-                $item['price'] = BackEndHelper::currency_to_usd(abs($request['price_' . str_replace('.', '_', $str)]));
-                $item['sku'] = $request['sku_' . str_replace('.', '_', $str)];
-                $item['qty'] = abs($request['qty_' . str_replace('.', '_', $str)]);
-                array_push($variations, $item);
-                $stock_count += $item['qty'];
-            }
-        } else {
-            $stock_count = (integer)$request['current_stock'];
-        }
+        $stock_count = (integer)$request['current_stock'];
 
         if ($validator->errors()->count() > 0) {
             return response()->json(['errors' => Helpers::error_processor($validator)]);
@@ -292,8 +289,11 @@ class ProductController extends BaseController
                 }
             }
             Translation::insert($data);
-
-            Toastr::success(translate('product_added_successfully'));
+            foreach($variations as $variation){
+                $variation['productId'] = $p->id;
+                DB::table('product_variations')->insert($variation);
+            }
+            Toastr::success(translate('Product added successfully!'));
             return redirect()->route('admin.products.list', ['in_house']);
         }
 
@@ -323,9 +323,72 @@ class ProductController extends BaseController
             'categories', 'subCategory', 'subSubCategory', 'filters', 'type'));
     }
 
+    public function update_quantity(Request $request)
+    {
+        $productVariations = DB::table('product_variations')->where('productId',$request['product_id'])->orderBy('order', 'ASC')->orderBy('id', 'ASC')->get();
+        $product = Product::find($request['product_id']);
+
+        $variations = [];
+
+
+        $index = 0;
+        foreach($productVariations as $option){
+
+            DB::table('product_variations')->where('id' , $option->id)->update([
+                'price' => $request['price_' .  str_replace(' ', '_', $option->type)],
+            ]);
+            $variations[] = [
+                'order' => $option->order,
+                'type' => $option->type,
+                'price' => $request['price_' .  str_replace(' ', '_', $option->type)],
+                'qty' => 0,
+                'sku' => null,
+                'purchase_price' => $option->purchase_price,
+                'tax' => $option->tax,
+                'discount' => $option->discount,
+                'discount_type' => $option->discount_type,
+                'tax_type' => $option->tax_type,
+                'shipping_cost' => $option->shipping_cost,
+                'multiply_qty' => isset($option->multiplyQTY) ? $option->multiplyQTY : 0,
+                'numberOfPieces' =>  $option->numberOfPieces,
+                'description' =>  $option->description,
+            ];
+            echo ( 'price_' . $option->type." : " . $request['price_' . $option->type])."<br>";
+        }
+
+
+
+
+        $stock_count = $request['current_stock'];
+
+        // if ($request->has('type')) {
+        //     foreach ($request['type'] as $key => $str) {
+        //         $item = [];
+        //         $item['type'] = $str;
+        //         $item['price'] = BackEndHelper::currency_to_usd(abs($request['price_' . str_replace('.', '_', $str)]));
+        //         $item['sku'] = $request['sku_' . str_replace('.', '_', $str)];
+        //         $item['qty'] = abs($request['qty_' . str_replace('.', '_', $str)]);
+        //         array_push($variations, $item);
+        //     }
+        // }
+
+        $product = Product::find($request['product_id']);
+        if ($stock_count >= 0) {
+            $product->current_stock = $stock_count;
+            $product->variation = json_encode($variations);
+            $product->save();
+            Toastr::success(\App\CPU\translate('product_quantity_updated_successfully!'));
+            return back();
+        } else {
+            Toastr::warning(\App\CPU\translate('product_quantity_can_not_be_less_than_0_!'));
+            return back();
+        }
+    }
+
     public function getUpdateView(string|int $id): View
     {
         $product = $this->productRepo->getFirstWhereWithoutGlobalScope(params: ['id' => $id], relations: ['translations']);
+        $product_category = json_decode($product->category_ids);
         $product['colors'] = json_decode($product['colors']);
         $categories = $this->categoryRepo->getListWhere(filters: ['position' => 0], dataLimit: 'all');
         $brands = $this->brandRepo->getListWhere(dataLimit: 'all');
@@ -334,9 +397,10 @@ class ProductController extends BaseController
         $languages = getWebConfig(name: 'pnc_language') ?? null;
         $colors = $this->colorRepo->getList(orderBy: ['name' => 'desc'], dataLimit: 'all');
         $attributes = $this->attributeRepo->getList(orderBy: ['name' => 'desc'], dataLimit: 'all');
+        $productVariations = DB::table('product_variations')->where('productId',$id)->get();
         $defaultLanguage = $languages[0];
 
-        return view(Product::UPDATE[VIEW], compact('product', 'categories', 'brands', 'brandSetting', 'digitalProductSetting', 'colors', 'attributes', 'languages', 'defaultLanguage'));
+        return view(Product::UPDATE[VIEW], compact('product', 'product_category' , 'categories', 'productVariations' , 'brands', 'brandSetting', 'digitalProductSetting', 'colors', 'attributes', 'languages', 'defaultLanguage'));
     }
 
     public function add_type(Request $request)
@@ -350,7 +414,7 @@ class ProductController extends BaseController
         echo json_encode(array('status' => $id));
     }
 
-    public function update(ProductUpdateRequest $request, ProductService $service, string|int $id): JsonResponse|RedirectResponse
+    public function updateold(ProductUpdateRequest $request, ProductService $service, string|int $id): JsonResponse|RedirectResponse
     {
         if ($request->ajax()) {
             return response()->json([], 200);
@@ -365,6 +429,213 @@ class ProductController extends BaseController
 
         Toastr::success(translate('product_updated_successfully'));
         return redirect()->route(Product::VIEW[ROUTE],['addedBy'=>$product['added_by'],'id'=>$product['id']]);
+    }
+
+    public function update(Request $request, $id)
+    {
+
+        $validator = Validator::make($request->all(), [
+            'name' => 'required',
+            'category_id' => 'required',
+            'brand_id' => 'required',
+        ], [
+            'name.required' => 'Product name is required!',
+            'category_id.required' => 'category  is required!',
+            'brand_id.required' => 'brand  is required!',
+        ]);
+
+
+        $variations = [];
+        $_variations = [];
+        $productOptionsNames = [] ;
+        foreach($request['prdoctPrice'] as $option){
+            if($option['unit'] && $option['unit_price'] && $option['purchase_price']  && $option['numberOfPieces'] ){
+
+                if ($option['discount_type'] == 'percent') {
+                    $option['dis'] = ($option['unit_price'] / 100) * $option['discount'];
+                } else {
+                    $option['dis'] = $option['discount'];
+                }
+
+                if ($option['unit_price'] <= $option['dis']) {
+                    $validator->after(function ($validator) {
+                        $validator->errors()->add(
+                            'unit_price', 'Discount can not be more or equal to the price!'
+                        );
+                    });
+                }
+
+                $_option = [
+                    'order' => $option['order'],
+                    'type' => $option['unit'],
+                    'price' => $option['unit_price'],
+                    'qty' => 0,
+                    'sku' => null,
+                    'purchase_price' => $option['purchase_price'],
+                    'tax' => $option['tax'],
+                    'discount' => $option['discount'],
+                    'discount_type' => $option['discount_type'],
+                    'tax_type' => $option['tax_type'],
+                    'shipping_cost' => $option['shipping_cost'],
+                    'multiply_qty' => isset($option['multiplyQTY']) ? $option['multiplyQTY'] : 0,
+                    'numberOfPieces' =>  $option['numberOfPieces'],
+                    'description' =>  $option['description'],
+                ];
+
+                $_variations[$option['order']] = $_option;
+                // $productOptionsNames[] = $_option['type'];
+            }
+        }
+
+        if(count($_variations) == 0){
+            $validator->after(function ($validator) {
+                $validator->errors()->add('options', 'Product can not have one unit');
+            });
+        }
+
+
+
+
+        sort($_variations);
+        foreach($_variations as $_variation){
+            $variations[] = $_variation;
+            $productOptionsNames[] = $_variation['type'];
+        }
+
+        unset($_variations);
+
+
+        $choice_options = [];
+        array_push($choice_options, [
+            "name" => "choice_4",
+            "title" => "الكمية",
+            "options" => $productOptionsNames
+        ]);
+
+
+
+        $product = Prod::find($id);
+        $product->name = $request->name[array_search('en', $request->lang)];
+
+        $category = [];
+        if ($request->category_id != null) {
+            array_push($category, [
+                'id' => $request->category_id,
+                'position' => 1,
+            ]);
+        }
+        if ($request->sub_category_id != null) {
+            array_push($category, [
+                'id' => $request->sub_category_id,
+                'position' => 2,
+            ]);
+        }
+        if ($request->sub_sub_category_id != null) {
+            array_push($category, [
+                'id' => $request->sub_sub_category_id,
+                'position' => 3,
+            ]);
+        }
+        $product->category_ids = json_encode($category);
+        $product->brand_id = $request->brand_id;
+        $product->unit = $request->unit;
+        $product->details = $request->description[array_search('en', $request->lang)];
+        $product_images = json_decode($product->images);
+
+        if ($request->has('colors_active') && $request->has('colors') && count($request->colors) > 0) {
+            $product->colors = json_encode($request->colors);
+        } else {
+            $colors = [];
+            $product->colors = json_encode($colors);
+        }
+
+
+
+        $product->choice_options = json_encode($choice_options);
+
+
+
+        $stock_count = (integer)$request['current_stock'];
+
+        if ($validator->errors()->count() > 0) {
+            return response()->json(['errors' => Helpers::error_processor($validator)]);
+        }
+
+        if ($validator->fails()) {
+            return back()->withErrors($validator)
+                ->withInput();
+        }
+
+        //combinations end
+        $product->variation = json_encode($variations);
+        $product->unit_price = BackEndHelper::currency_to_usd($request->unit_price);
+        $product->purchase_price = BackEndHelper::currency_to_usd($request->purchase_price);
+        $product->tax = $request->tax == 'flat' ? BackEndHelper::currency_to_usd($request->tax) : $request->tax;
+        $product->tax_type = $request->tax_type;
+        $product->discount = $request->discount_type == 'flat' ? BackEndHelper::currency_to_usd($request->discount) : $request->discount;
+        $product->attributes = json_encode($request->choice_attributes);
+        $product->discount_type = $request->discount_type;
+        $product->current_stock = abs($stock_count);
+
+        $product->video_provider = 'youtube';
+        $product->video_url = $request->video_link;
+        if ($product->added_by == 'seller' && $product->request_status == 2) {
+            $product->request_status = 1;
+        }
+        $product->shipping_cost = BackEndHelper::currency_to_usd($request->shipping_cost);
+        $product->multiply_qty = $request->multiplyQTY=='on'?1:0;
+        if ($request->ajax()) {
+            return response()->json([], 200);
+        } else {
+            if ($request->file('images')) {
+                foreach ($request->file('images') as $img) {
+                    $product_images[] = ImageManager::upload('product/', 'png', $img);
+                }
+                $product->images = json_encode($product_images);
+            }
+
+            if ($request->file('image')) {
+                $product->thumbnail = ImageManager::update('product/thumbnail/', $product->thumbnail, 'png', $request->file('image'));
+            }
+
+            $product->meta_title = $request->meta_title;
+            $product->meta_description = $request->meta_description;
+            if ($request->file('meta_image')) {
+                $product->meta_image = ImageManager::update('product/meta/', $product->meta_image, 'png', $request->file('meta_image'));
+            }
+
+            $product->save();
+
+            foreach ($request->lang as $index => $key) {
+                if ($request->name[$index] && $key != 'en') {
+                    Translation::updateOrInsert(
+                        ['translationable_type' => 'App\Model\Product',
+                            'translationable_id' => $product->id,
+                            'locale' => $key,
+                            'key' => 'name'],
+                        ['value' => $request->name[$index]]
+                    );
+                }
+                if ($request->description[$index] && $key != 'en') {
+                    Translation::updateOrInsert(
+                        ['translationable_type' => 'App\Model\Product',
+                            'translationable_id' => $product->id,
+                            'locale' => $key,
+                            'key' => 'description'],
+                        ['value' => $request->description[$index]]
+                    );
+                }
+            }
+
+
+            DB::table('product_variations')->where('productId',$product->id)->delete();
+            foreach($variations as $variation){
+                $variation['productId'] = $product->id;
+                DB::table('product_variations')->insert($variation);
+            }
+            Toastr::success('Product updated successfully.');
+            return back();
+        }
     }
 
     public function getView(string $addedBy,string|int $id): View

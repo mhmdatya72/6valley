@@ -66,7 +66,7 @@ class InstallablePackage extends Command
         }
 
         $dot_env = base_path('.env');
-        $new_env = base_path('.env.example');
+        $new_env = base_path('.env');
         copy($new_env, $dot_env);
 
         $routes = base_path('app/Providers/RouteServiceProvider.php');

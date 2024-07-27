@@ -7914,4 +7914,5 @@
   'order_update' => 'Order update',
   'wallet_discount' => 'Wallet discount',
   'Out_for_delivery' => 'Out for delivery',
+  'The product type field is required.' => 'The product type field is required.',
 );

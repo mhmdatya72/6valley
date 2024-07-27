@@ -31,7 +31,7 @@ class SellerController extends Controller
     {
         $data=[];
         $sellerId = $request['seller_id'];
-        $seller = $sellerId!= 0 ? Seller::with(['shop'])->where(['id' => $request['seller_id']])->first(['id', 'f_name', 'l_name', 'phone', 'image', 'minimum_order_amount']) : null;
+        $seller = $sellerId!= 0 ? Seller::with(['shop'])->where(['id' => $request['seller_id']])->first() : null;
 
         $productIds = Product::when($sellerId == 0, function ($query) {
             return $query->where(['added_by' => 'admin']);
